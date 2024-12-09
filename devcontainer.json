@@ -1,0 +1,7 @@
+{
+    "name": "finance--complaint",
+    "image": "mcr.microsoft.com/vscode/devcontainers/python:3.12",
+    "runArgs": ["--no-cache", "--force-rm"],
+    "postCreateCommand": "pip install -r requirements.txt"
+  }
+  
