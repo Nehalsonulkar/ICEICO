@@ -7,100 +7,74 @@ jobs:
     resource_class: medium
     steps:
       - checkout
-
       - run: 
           name: lint code
           command: echo "Linting repository"
-
       - run: 
           name: run unit tests
           command: echo "Running unit tests"
-  
+
   continuous-delivery:
     docker:
-      - image: google/cloud-sdk
+      - image: amazon/aws-cli:latest  # AWS CLI image
     resource_class: medium
     environment:
       REPOSITORY: finance-complaint
       IMAGE_NAME: finance-complaint
       IMAGE_TAG: latest
-    steps:
-      - checkout
-      - run:
-          name: google cloud authentication
-          command: |
-            echo $GCLOUD_SERVICE_KEY | gcloud auth activate-service-account --key-file=- 
-            gcloud --quiet config set project ${GOOGLE_PROJECT_ID}
-            gcloud --quiet config set compute/zone ${GOOGLE_COMPUTE_ZONE}
-
-      - setup_remote_docker:
-          docker_layer_caching: true  # Removed the version line
-
-      - run:
-          name: build and tag
-          command: docker build -t $GOOGLE_COMPUTE_ZONE-docker.pkg.dev/${GOOGLE_PROJECT_ID}/$REPOSITORY/$IMAGE_NAME:$IMAGE_TAG .
-
-      - run: 
-          name: configure docker login
-          command: gcloud auth configure-docker $GOOGLE_COMPUTE_ZONE-docker.pkg.dev
-      
-      - run:
-          name: push to private repository
-          command: docker push $GOOGLE_COMPUTE_ZONE-docker.pkg.dev/${GOOGLE_PROJECT_ID}/$REPOSITORY/$IMAGE_NAME:$IMAGE_TAG 
-
-  continuous-deployment:
-    machine: true
-    resource_class: machine-learning-01/self-hosted-1
-    environment:
-      REPOSITORY: finance-complaint
-      GAR_IMAGE_NAME: finance-complaint
-      IMAGE_TAG: latest
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_DEFAULT_REGION: "ap-south-1"
-      MONGO_DB_URL: ${MONGO_DB_URL}
     steps:
       - checkout
-
       - run:
-          name: google cloud authentication
+          name: Authenticate AWS CLI
           command: |
-            echo $GCLOUD_SERVICE_KEY | gcloud auth activate-service-account --key-file=- 
-            gcloud --quiet config set project ${GOOGLE_PROJECT_ID}
-            gcloud --quiet config set compute/zone ${GOOGLE_COMPUTE_ZONE}
-
-      - run: 
-          name: configure docker login
-          command: gcloud auth configure-docker $GOOGLE_COMPUTE_ZONE-docker.pkg.dev
+            aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
+            aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
+            aws configure set default.region $AWS_DEFAULT_REGION
 
       - run:
-          name: pull image from private repository
-          command: docker pull ${GOOGLE_COMPUTE_ZONE}-docker.pkg.dev/${GOOGLE_PROJECT_ID}/$REPOSITORY/$GAR_IMAGE_NAME:$IMAGE_TAG 
+          name: Build Docker Image
+          command: docker build -t $IMAGE_NAME:$IMAGE_TAG .
+
+      - run:
+          name: Login to AWS ECR
+          command: |
+            aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin <AWS_ACCOUNT_ID>.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+
+      - run:
+          name: Push to AWS ECR
+          command: |
+            docker tag $IMAGE_NAME:$IMAGE_TAG <AWS_ACCOUNT_ID>.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_NAME:$IMAGE_TAG
+            docker push <AWS_ACCOUNT_ID>.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_NAME:$IMAGE_TAG
+
+  continuous-deployment:
+    machine: true
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Pull Docker Image from AWS ECR
+          command: docker pull <AWS_ACCOUNT_ID>.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_NAME:$IMAGE_TAG
         
       - run: 
-          name: Set env variable
-          command: echo 'export IMAGE_NAME="${GOOGLE_COMPUTE_ZONE}-docker.pkg.dev/${GOOGLE_PROJECT_ID}/$REPOSITORY/finance-complaint:$IMAGE_TAG"' >> "$BASH_ENV"
-
-      - run:
-          name: start the containers
+          name: Start Docker Compose
           command: docker-compose up -d
-  
+
 workflows:
+  version: 2
   CICD:
     jobs:
       - continuous-integration
-
       - continuous-delivery:
           requires:
             - continuous-integration
-
       - sanity-check:
           type: approval
           requires:
             - continuous-delivery
-
       - continuous-deployment:
           requires:
             - sanity-check
-            - continuous-integration
             - continuous-delivery
